@@ -1,0 +1,458 @@
+//const ami = new AsteriskManager(5038, '127.0.0.1', 'SoulPhone', 'ResItcHiNGEn**', true);
+//2025-02-13 **Se crean funciones para agregar una extensión a varias colas desde el endpoint /queue/add, /queue/remove y /queue/pause.
+//2025-02-14 **/queue/add = Se agrega parametro para agregar el dato del usuario a la cola.
+//2025-02-14 **/queue/pause = Se agrega la razón de la pausa. 
+
+const express = require('express');
+const AsteriskManager = require('asterisk-manager');
+
+const app = express();
+const port = 3000;
+
+app.use(express.json());
+
+//const ami = new AsteriskManager(5038, '172.17.8.100', 'SoulPhone', 'ResItcHiNGEn**', true);
+const ami = new AsteriskManager(5038, '10.57.251.179', 'SoulPhone', 'ResItcHiNGEn**', true);
+
+ami.keepConnected();
+
+ami.on('connect', () => {
+  console.log('Conectado al AMI');
+});
+
+ami.on('error', (err) => {
+  console.error('Error en AMI:', err);
+});
+
+/**
+ * Función auxiliar para ejecutar una acción AMI para cada cola.
+ * @param {string} actionName - El nombre de la acción AMI (QueueAdd, QueueRemove, QueuePause)
+ * @param {array} queues - Arreglo de nombres de cola.
+ * @param {string} channel - La extensión o canal (por ejemplo, SIP/2020).
+ * @param {object} [extras] - Parámetros adicionales que se deben incluir en la acción.
+ * @returns {Promise} Promesa que se resuelve con los resultados de cada acción.
+ */
+function performQueueAction(actionName, queues, channel, extras) {
+  const actions = queues.map(queue => {
+    return new Promise((resolve) => {
+      let params = {
+        action: actionName,
+        queue: queue,
+        interface: channel
+      };
+
+      if (extras) {
+        Object.assign(params, extras);
+      }
+
+      ami.action(params, (err, response) => {
+        if (err) {
+          return resolve({ queue, success: false, error: err });
+        } else {
+          return resolve({ queue, success: true, response });
+        }
+      });
+    });
+  });
+  return Promise.all(actions);
+}
+
+/**
+ * Endpoint para agregar una extensión a múltiples colas.
+ * Método: POST
+ * Ruta: /queue/add
+ * Body esperado:
+ * {
+ *   "queues": ["Q1", "Q2", "Q4"],
+ *   "interface": "SIP/2020",
+ *   "membername": "Agente 1"  // parámetro opcional
+ * }
+ */
+app.post('/queue/add', async (req, res) => {
+  const { queues, interface: channel, membername } = req.body;
+  if (!queues || !Array.isArray(queues) || !channel) {
+    return res.status(400).json({ error: 'Faltan parámetros: queues (array) e interface son requeridos' });
+  }
+  
+  let extras = {};
+  if (membername) {
+    extras.membername = membername;
+  }
+
+  try {
+    const results = await performQueueAction('QueueAdd', queues, channel, extras);
+    return res.json({ 
+      message: `Acción QueueAdd ejecutada para ${channel} en colas: ${queues.join(', ')}${membername ? ` con membername: ${membername}` : ''}`, 
+      results 
+    });
+  } catch (e) {
+    return res.status(500).json({ error: 'Error al ejecutar QueueAdd', details: e });
+  }
+});
+
+/**
+ * Endpoint para eliminar una extensión de múltiples colas.
+ * Método: POST (o DELETE, según tu preferencia)
+ * Ruta: /queue/remove
+ * Body esperado:
+ * {
+ *   "queues": ["Q1", "Q2", "Q4"],
+ *   "interface": "SIP/2020"
+ * }
+ */
+app.post('/queue/remove', async (req, res) => {
+  const { queues, interface: channel } = req.body;
+  if (!queues || !Array.isArray(queues) || !channel) {
+    return res.status(400).json({ error: 'Faltan parámetros: queues (array) e interface son requeridos' });
+  }
+  try {
+    const results = await performQueueAction('QueueRemove', queues, channel);
+    return res.json({ 
+      message: `Acción QueueRemove ejecutada para ${channel} en colas: ${queues.join(', ')}`, 
+      results 
+    });
+  } catch (e) {
+    return res.status(500).json({ error: 'Error al ejecutar QueueRemove', details: e });
+  }
+});
+
+/**
+ * Endpoint para pausar o reanudar una extensión en múltiples colas.
+ * Método: POST
+ * Ruta: /queue/pause
+ * Body esperado:
+ * {
+ *   "queues": ["Q1", "Q2", "Q4"],
+ *   "interface": "SIP/2020",
+ *   "paused": 1,          // 1 para pausar, 0 para reanudar
+ *   "reason": "Almuerzo"  // parámetro opcional para registrar el motivo
+ * }
+ */
+app.post('/queue/pause', async (req, res) => {
+  const { queues, interface: channel, paused, reason } = req.body;
+  if (!queues || !Array.isArray(queues) || !channel || paused === undefined) {
+    return res.status(400).json({ error: 'Faltan parámetros: queues (array), interface y paused son requeridos' });
+  }
+  
+  const extraParams = { paused };
+  if (reason) {
+    extraParams.reason = reason;
+  }
+
+  try {
+    const results = await performQueueAction('QueuePause', queues, channel, extraParams);
+    const estado = paused == 1 ? 'pausada' : 'reanudad';
+    return res.json({ 
+      message: `Acción QueuePause ejecutada para ${channel} (${estado}) en colas: ${queues.join(', ')}${reason ? ` con motivo: ${reason}` : ''}`, 
+      results 
+    });
+  } catch (e) {
+    return res.status(500).json({ error: 'Error al ejecutar QueuePause', details: e });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`API escuchando en http://localhost:${port}`);
+});
+
+const fs = require('fs');
+
+app.get('/channel/status/:extension', (req, res) => {
+  const { extension } = req.params;
+  console.log(`Consultando estado del canal para la extensión: ${extension}`);
+
+  ami.action({
+    action: 'Command',
+    command: 'core show channels verbose'
+  }, (err, response) => {
+    if (err) {
+      console.error('Error al ejecutar comando de canales:', err);
+      return res.status(500).json({ error: 'Error al consultar canales', details: err });
+    }
+
+    console.log('Respuesta completa AMI:', response);
+
+    // Se obtiene el output considerando varias propiedades
+    let output = (typeof response === 'string')
+      ? response
+      : (response.output || response.message || response.content || '');
+    console.log('Output procesado:', output);
+
+    // Escribir el output en un archivo para depuración
+    fs.writeFile('channel_output.txt', output, (err) => {
+      if (err) {
+        console.error('Error al escribir el archivo:', err);
+      } else {
+        console.log('El output se ha escrito en channel_output.txt');
+      }
+    });
+
+    const lines = output.split('\n');
+    let matchingChannels = [];
+
+    lines.forEach(line => {
+      if (!line.trim()) return;
+      if (line.trim().startsWith('SIP/')) {
+        // Separa la línea en tokens utilizando espacios (uno o más)
+        const tokens = line.trim().split(/\s+/);
+        console.log('Tokens extraídos:', tokens);
+        if (tokens.length >= 2) {
+          // Se asume que los dos últimos tokens corresponden a Accountcode y PeerAccount
+          const accountcode = tokens[tokens.length - 2];
+          const peeraccount = tokens[tokens.length - 1];
+          console.log(`Comparando para la extensión ${extension}: accountcode=${accountcode}, peeraccount=${peeraccount}`);
+          if (accountcode === extension || peeraccount === extension) {
+            matchingChannels.push(line);
+            console.log('Canal coincidente agregado:', line);
+          }
+        }
+      }
+    });
+
+    console.log('Canales coincidentes encontrados:', matchingChannels);
+
+    if (matchingChannels.length > 0) {
+      res.json({
+        extension,
+        active: true,
+        channels: matchingChannels
+      });
+    } else {
+      res.json({
+        extension,
+        active: false,
+        message: 'No hay canales activos para esta extensión'
+      });
+    }
+  });
+});
+
+/**
+ * Endpoint para pausar o reanudar una extensión en múltiples colas.
+ * Método: POST
+ * Ruta: /queue/pause
+ * Body esperado:
+ * {
+ *   "queues": ["Q1", "Q2", "Q4"],
+ *   "interface": "SIP/2020",
+ *   "paused": 1,          // 1 para pausar, 0 para reanudar
+ *   "reason": "Almuerzo"  // parámetro opcional para registrar el motivo
+ * }
+ */
+
+app.get('/extension/:extension/status', (req, res) => {
+  const { extension } = req.params;
+  console.log(`Consultando estado de la extensión: ${extension}`);
+
+  // Función para extraer el output y asegurarse de que sea una cadena
+  const extractOutput = (response) => {
+    let output =
+      typeof response === 'string'
+        ? response
+        : (response.output ||
+           response.message ||
+           response.content ||
+           response.data ||
+           '');
+    if (typeof output !== 'string') {
+      output = output.toString();
+    }
+    return output;
+  };
+
+  // Promesa para determinar si la extensión está registrada (logueada) usando "sip show peer <extension>"
+  const getRegistrationStatus = new Promise((resolve, reject) => {
+    ami.action(
+      {
+        action: 'Command',
+        command: `sip show peer ${extension}`
+      },
+      (err, response) => {
+        if (err) {
+          console.error('Error al ejecutar sip show peer:', err);
+          return reject(err);
+        }
+        let output = extractOutput(response);
+        console.log('Output de sip show peer:', output);
+        // Se asume que el output contiene "OK" cuando la extensión está registrada
+        const logged = output.includes('OK');
+        resolve(logged);
+      }
+    );
+  });
+
+  // Promesa para obtener las colas en las que está la extensión usando el output de "queue show"
+  const getQueues = new Promise((resolve, reject) => {
+    ami.action(
+      {
+        action: 'Command',
+        command: 'queue show'
+      },
+      (err, response) => {
+        if (err) {
+          console.error('Error al ejecutar queue show:', err);
+          return reject(err);
+        }
+        let output = extractOutput(response);
+        console.log('Output de queue show:', output);
+
+        let queues = [];
+        // Si el output inicia con "Output de queue show:" lo removemos
+        output = output.replace(/^Output de queue show:\s*/, '');
+        // Dividimos el output en bloques usando ",," como separador
+        const blocks = output.split(',,');
+        // Expresión regular para extraer el encabezado de cada cola (por ejemplo, "Q10")
+        const headerRegex = /^(Q\d+)/;
+        // Expresión regular para buscar la presencia de la extensión en formato SIP/<extension>
+        const memberRegex = new RegExp(`SIP\\/${extension}\\b`, 'i');
+
+        blocks.forEach((block) => {
+          block = block.trim();
+          let headerMatch = block.match(headerRegex);
+          if (headerMatch) {
+            let queueName = headerMatch[1];
+            if (memberRegex.test(block)) {
+              console.log(`La extensión ${extension} se encontró en la cola ${queueName}`);
+              if (!queues.includes(queueName)) {
+                queues.push(queueName);
+              }
+            }
+          }
+        });
+        resolve(queues);
+      }
+    );
+  });
+
+  Promise.all([getRegistrationStatus, getQueues])
+    .then(([logged, queues]) => {
+      res.json({
+        extension,
+        logged,
+        queues,
+        message: logged
+          ? `La extensión está logueada${queues.length > 0 ? ` y se encuentra en la(s) cola(s): ${queues.join(', ')}` : ''}.`
+          : 'La extensión no está logueada.'
+      });
+    })
+    .catch((err) => {
+      res.status(500).json({
+        error: 'Error al consultar el estado de la extensión',
+        details: err
+      });
+    });
+});
+
+app.get('/extension/:extension/status2', (req, res) => {
+  const { extension } = req.params;
+  console.log(`Consultando estado de la extensión: ${extension}`);
+
+  // Función para extraer el output y asegurarse de que sea una cadena
+  const extractOutput = (response) => {
+    let output = (typeof response === 'string')
+      ? response
+      : (response.output || response.message || response.content || response.data || '');
+    if (typeof output !== 'string') {
+      output = output.toString();
+    }
+    return output;
+  };
+
+  // Promesa para determinar si la extensión está registrada (logueada)
+  const getRegistrationStatus = new Promise((resolve, reject) => {
+    ami.action({
+      action: 'Command',
+      command: 'sip show peers'
+    }, (err, response) => {
+      if (err) {
+        console.error('Error al ejecutar sip show peers:', err);
+        return reject(err);
+      }
+      console.log('Propiedades de response (sip show peers):', Object.keys(response));
+      console.log('Response completo (sip show peers):', response);
+
+      let output = extractOutput(response);
+      console.log('Output de sip show peers:', output);
+
+      // Separa el output en líneas y busca la línea correspondiente a la extensión.
+      const lines = output.split('\n');
+      let logged = false;
+      for (let line of lines) {
+        line = line.trim();
+        if (line.startsWith(`${extension}/`)) {
+          if (line.includes('OK')) {
+            logged = true;
+          }
+          break;
+        }
+      }
+      resolve(logged);
+    });
+  });
+
+  // Promesa para obtener las colas a las que pertenece la extensión y extraer información adicional
+  const getQueues = new Promise((resolve, reject) => {
+    ami.action({
+      action: 'Command',
+      command: 'queue show'
+    }, (err, response) => {
+      if (err) {
+        console.error('Error al ejecutar queue show:', err);
+        return reject(err);
+      }
+      console.log('Propiedades de response (queue show):', Object.keys(response));
+      console.log('Response completo (queue show):', response);
+
+      let output = extractOutput(response);
+      console.log('Output de queue show:', output);
+
+      const lines = output.split('\n');
+      let queues = [];
+      let currentQueue = null;
+
+      lines.forEach(line => {
+        line = line.trim();
+        if (line.startsWith('Q')) {
+          // Detecta la línea que indica el nombre de la cola
+          const match = line.match(/^(Q\d+)/);
+          if (match) {
+            currentQueue = match[1];
+          }
+        } else if (currentQueue && (line.includes(`SIP/${extension}`) || line.includes(`(SIP/${extension})`))) {
+          // Extrae la información de pausa (por ejemplo, "ACW was 14 secs ago")
+          let paused = null;
+          const pausedMatch = line.match(/\(paused:([^)]+)\)/);
+          if (pausedMatch) {
+            paused = pausedMatch[1].trim();
+          }
+          // Determina el estado: si aparece "(Unavailable)" se marca como tal, de lo contrario se verifica "(Not in use)"
+          let usage = null;
+          if (line.includes('(Unavailable)')) {
+            usage = 'Unavailable';
+          } else if (line.includes('(Not in use)')) {
+            usage = 'Not in use';
+          }
+          // Agrega un objeto con la cola y los detalles extraídos
+          queues.push({ queue: currentQueue, paused, usage });
+        }
+      });
+      resolve(queues);
+    });
+  });
+
+  Promise.all([getRegistrationStatus, getQueues])
+    .then(([logged, queues]) => {
+      res.json({
+        extension,
+        logged,
+        queues,
+        message: logged
+          ? 'La extensión está logueada y se encuentra en las colas especificadas.'
+          : 'La extensión no está logueada.'
+      });
+    })
+    .catch(err => {
+      res.status(500).json({ error: 'Error al consultar el estado de la extensión', details: err });
+    });
+});
+

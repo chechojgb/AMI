@@ -1,0 +1,9 @@
+Response: Follows
+Privilege: Command
+ActionID: 1742233388990
+Channel              Context              Extension        Prio State   Application  Data                      CallerID        Duration Accountcode PeerAccount BridgeID            
+SIP/VC8205-00000130  Inbound              6014863004         27 Up      Queue        Q36,tT                    3207671490      00:00:57                         12fa62aa-44bc-49b9-8
+SIP/3000-00000131    trunkinbound         6014863004          1 Up      AppQueue     (Outgoing Line)                           00:00:55                         12fa62aa-44bc-49b9-8
+2 active channels
+1 of 20000 max active call ( 0.01% of capacity)
+193 calls processed
